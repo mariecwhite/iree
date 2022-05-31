@@ -13,7 +13,9 @@ from common.benchmark_command import BenchmarkCommand
 # Regexes for retrieving memory information.
 _VMHWM_REGEX = re.compile(r".*?VmHWM:.*?(\d+) kB.*")
 _VMRSS_REGEX = re.compile(r".*?VmRSS:.*?(\d+) kB.*")
+_RSSANON_REGEX = re.compile(r".*?RssAnon:.*?(\d+) kB.*")
 _RSSFILE_REGEX = re.compile(r".*?RssFile:.*?(\d+) kB.*")
+_RSSSHMEM_REGEX = re.compile(r".*?RssShmem:.*?(\d+) kB.*")
 
 
 def run_command(benchmark_command: BenchmarkCommand) -> list[float]:
@@ -29,10 +31,18 @@ def run_command(benchmark_command: BenchmarkCommand) -> list[float]:
                                        stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT)
 
+  # Log system memory.
+  save_path = "/data/local/tmp/memory_" + str(benchmark_command.model_name) + "_" + str(benchmark_command.driver) + "_" + str(benchmark_command.num_threads) + ".csv"
+
+  with open(save_path, "a") as f:
+    results_array = ["vhwm,vmrss,rssanon,rssfile,rssshmem"]
+    f.write(",".join(results_array) + "\n")
+
   # Keep a record of the highest VmHWM corresponding VmRSS and RssFile values.
   vmhwm = 0
   vmrss = 0
   rssfile = 0
+  results = []
   while benchmark_process.poll() is None:
     pid_status = subprocess.run(
         ["cat", "/proc/" + str(benchmark_process.pid) + "/status"],
@@ -40,7 +50,17 @@ def run_command(benchmark_command: BenchmarkCommand) -> list[float]:
     output = pid_status.stdout.decode()
     vmhwm_matches = _VMHWM_REGEX.search(output)
     vmrss_matches = _VMRSS_REGEX.search(output)
+    rssanon_matches = _RSSANON_REGEX.search(output)
     rssfile_matches = _RSSFILE_REGEX.search(output)
+    rssshmem_matches = _RSSSHMEM_REGEX.search(output)
+
+    if vmhwm_matches:
+      results.append([float(vmhwm_matches.group(1)),
+                    float(vmrss_matches.group(1)),
+                    float(rssanon_matches.group(1)),
+                    float(rssfile_matches.group(1)),
+                    float(rssshmem_matches.group(1))])
+
 
     if vmhwm_matches and vmrss_matches and rssfile_matches:
       curr_vmhwm = float(vmhwm_matches.group(1))
@@ -49,7 +69,12 @@ def run_command(benchmark_command: BenchmarkCommand) -> list[float]:
         vmrss = float(vmrss_matches.group(1))
         rssfile = float(rssfile_matches.group(1))
 
-    time.sleep(0.5)
+    time.sleep(0.1)
+
+  with open(save_path, "a") as f:
+    for r in results:
+      results_array = [str(i) for i in r]
+      f.write(",".join(results_array) + "\n")
 
   stdout_data, _ = benchmark_process.communicate()
 

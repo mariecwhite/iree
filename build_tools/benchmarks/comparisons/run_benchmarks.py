@@ -26,8 +26,14 @@ import os
 
 from common.benchmark_runner import *
 from common.utils import *
+from gocr_tflite_recognizer_latin_float import *
 from mobilebert_fp32_commands import *
-
+from ocr_mobilenet_quant_v1_224 import *
+from ocr_rpn_text_detector_mobile_space_to_depth_float_v2 import *
+from ocr_rpn_text_detector_mobile_space_to_depth_quantized_mbv2_v1 import *
+from ocr_rpn_text_detector_mobile_space_to_depth_quantized_v2 import *
+from ocr_tflite_lstm_recognizer_latin_03_conv_model import *
+from ocr_tflite_screen_recognizer_latin_conv_model import *
 
 def benchmark_desktop_cpu(device_name: str,
                           command_factories: list[BenchmarkCommandFactory],
@@ -107,7 +113,14 @@ def benchmark_mobile_gpu(device_name: str,
 def main(args):
   # Create factories for all models to be benchmarked.
   command_factory = []
-  command_factory.append(MobilebertFP32CommandFactory(args.base_dir))
+  command_factory.append(GocrTfliteRecognizerLatinFloatFactory(args.base_dir))
+  #command_factory.append(MobilebertFP32CommandFactory(args.base_dir))
+  #command_factory.append(MobilenetQuantV1224Factory(args.base_dir))
+  #command_factory.append(RpnTextDetectorMobileSpaceToDepthFloatV2Factory(args.base_dir))
+  #command_factory.append(RpnTextDetectorMobileSpaceToDepthQuantizedMbv2V1Factory(args.base_dir))
+  #command_factory.append(RpnTextDetectorMobileSpaceToDepthQuantizedV2Factory(args.base_dir))
+  #command_factory.append(TfliteLstmRecognizerLatin03ConvModelFactory(args.base_dir))
+  #command_factory.append(TfliteScreenRecognizerLatinConvModelFactory(args.base_dir))
 
   if args.mode == "desktop":
     results_path = os.path.join(args.output_dir, "results.csv")

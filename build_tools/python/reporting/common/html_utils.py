@@ -105,7 +105,7 @@ def style_slowdown(v):
 def style_performance(v):
   if "faster" in v:
     return style_speedup(float(v.split("x")[0]))
-  else:
+  elif "slower" in v:
     return style_slowdown(float(v.split("x")[0]))
 
 

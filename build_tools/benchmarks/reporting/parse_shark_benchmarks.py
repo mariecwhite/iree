@@ -10,17 +10,22 @@ Example usage:
 python parse_shark_benchmarks.py \
   --shark_version=20220924.162 \
   --iree_version=20220924.276 \
+  --timestamp=1666951260 \
   --cpu_shark_csv=icelake_shark_bench_results.csv \
   --cpu_iree_csv=icelake_iree_bench_results.csv \
+  --cpu_baseline=cpu_baseline.csv \
   --gpu_shark_csv=a100_shark_bench_results.csv \
   --gpu_iree_csv=a100_iree_bench_results.csv \
-  --output_path=/tmp/summary.html
+  --gpu_baseline=a100_baseline.csv \
+  --output_dir=/tmp/shark_summary
 
 """
 
 import argparse
+import os
 import pandas as pd
 import pathlib
+import scipy
 import sys
 
 from datetime import date
@@ -33,26 +38,64 @@ from reporting.common import html_utils
 _MODEL = "model"
 _DIALECT = "dialect"
 _DATA_TYPE = "data_type"
+_SHAPE_TYPE = "shape_type"
 _BASELINE = "baseline"
 _DEVICE = "device"
 _BASELINE_LATENCY = "baseline latency (ms)"
 _IREE_LATENCY = "IREE latency (ms)"
 _SHARK_LATENCY = "SHARK latency (ms)"
 _IREE_VS_BASELINE = "IREE vs baseline"
+_IREE_VS_BASELINE_RAW = "IREE vs baseline (x faster)"
 _SHARK_VS_BASELINE = "SHARK vs baseline"
 _IREE_VS_SHARK = "IREE vs SHARK"
+_GEOMEAN = "geomean"
+_METRIC_TYPE = "metric_type"
+_METRIC_UNITS = "metric_units"
+_METRIC_VALUE = "metric_value"
+_TIMESTAMP = "timestamp"
 
 _PERF_COLUMNS = [_IREE_VS_BASELINE, _SHARK_VS_BASELINE, _IREE_VS_SHARK]
 _LATENCY_COLUMNS = [_BASELINE_LATENCY, _IREE_LATENCY, _SHARK_LATENCY]
 
 
-def _generate_table(df_iree, df_shark, df_baseline, title):
-  """Generates a table comparing latencies between IREE, SHARK and a baseline."""
-  summary = pd.DataFrame(columns=[
-      _MODEL, _BASELINE, _DATA_TYPE, _DIALECT, _DEVICE, _BASELINE_LATENCY,
-      _IREE_LATENCY, _SHARK_LATENCY, _IREE_VS_BASELINE, _SHARK_VS_BASELINE,
-      _IREE_VS_SHARK
+def _create_summary_df():
+  df = pd.DataFrame(columns=[
+      _MODEL,
+      _BASELINE,
+      _DATA_TYPE,
+      _SHAPE_TYPE,
+      _DIALECT,
+      _DEVICE,
+      _BASELINE_LATENCY,
+      _IREE_LATENCY,
+      _SHARK_LATENCY,
+      _IREE_VS_BASELINE,
+      _SHARK_VS_BASELINE,
+      _IREE_VS_SHARK,
+      _IREE_VS_BASELINE_RAW,
+      _TIMESTAMP,
   ])
+  df = df.astype({
+      _IREE_VS_BASELINE_RAW: 'float',
+      _BASELINE_LATENCY: 'float',
+      _IREE_LATENCY: 'float',
+      _SHARK_LATENCY: 'float',
+  })
+  return df
+
+
+def _create_trends_df():
+  df = pd.DataFrame(columns=[
+      _DEVICE, _SHAPE_TYPE, _BASELINE, _METRIC_TYPE, _METRIC_UNITS,
+      _METRIC_VALUE, _TIMESTAMP
+  ])
+  df = df.astype({_METRIC_VALUE: 'float'})
+  return df
+
+
+def _generate_table(timestamp, df_iree, df_shark, df_baseline, shape_type, title):
+  """Generates a table comparing latencies between IREE, SHARK and a baseline."""
+  summary = _create_summary_df()
 
   models = df_iree.model.unique()
   for model in models:
@@ -102,6 +145,8 @@ def _generate_table(df_iree, df_shark, df_baseline, title):
           iree_latency = iree_latency.iloc[0]["ms/iter"]
           iree_vs_baseline = html_utils.format_latency_comparison(
               iree_latency, baseline_latency)
+          iree_vs_baseline_raw = baseline_latency / iree_latency
+
 
           if df_shark is not None:
             shark_results = df_shark.loc[(df_shark.model == model) &
@@ -129,16 +174,17 @@ def _generate_table(df_iree, df_shark, df_baseline, title):
             iree_vs_shark = "<missing_comparison>"
 
           summary.loc[len(summary)] = [
-              model, engine, data_type, dialect, device,
-              f"{baseline_latency:.1f}", f"{iree_latency:.1f}",
-              f"{shark_latency:.1f}", iree_vs_baseline, shark_vs_baseline,
-              iree_vs_shark
+              model, engine, data_type, shape_type, dialect, device,
+              round(baseline_latency, 1),
+              round(iree_latency, 1),
+              round(shark_latency, 1), iree_vs_baseline, shark_vs_baseline,
+              iree_vs_shark, iree_vs_baseline_raw, timestamp
           ]
 
-  summary = summary.round(2)
-
   st = summary.style.set_table_styles(html_utils.get_table_css())
+  st = st.format(precision=1)
   st = st.hide(axis="index")
+  st = st.hide_columns(subset=[_IREE_VS_BASELINE_RAW, _TIMESTAMP])
   if df_shark is None:
     st = st.hide_columns(
         subset=[_SHARK_LATENCY, _SHARK_VS_BASELINE, _IREE_VS_SHARK])
@@ -170,11 +216,13 @@ def _generate_table(df_iree, df_shark, df_baseline, title):
                              "text-align": "right",
                              "color": "#ffffff"
                          })
+  html = st.to_html() + "<br/>"
 
-  return st.to_html() + "<br/>"
+  return summary, html
 
 
-def generate_table(iree_csv,
+def generate_table(timestamp,
+                   iree_csv,
                    baseline_csv,
                    shark_csv=None,
                    shape_type="static",
@@ -183,6 +231,7 @@ def generate_table(iree_csv,
   """Generates a table comparing latencies between IREE, SHARK and a baseline.
 
   Args:
+    timestamp: Timestamp results were captured.
     iree_csv: Path to the csv file containing IREE latencies.
     baseline_csv: Path to the csv file containing baseline latencies.
     shark_csv: Path to the csv file containing SHARK-Runtime latencies. This is optional.
@@ -191,7 +240,8 @@ def generate_table(iree_csv,
     title: The title of the generated table.
 
   Returns:
-    An HTML string containing the summarized report.
+    A tuple containing a summary dataframe and an HTML string representing the
+    summarized report.
   """
   shark_df = None
   if shark_csv is not None:
@@ -207,7 +257,99 @@ def generate_table(iree_csv,
   baseline_df = baseline_df.loc[(baseline_df.shape_type == shape_type) &
                                 (baseline_df.device == device)]
 
-  return _generate_table(iree_df, shark_df, baseline_df, title)
+  return _generate_table(timestamp, iree_df, shark_df, baseline_df, shape_type, title)
+
+
+def _calculate_geomean(timestamp, summary_df, device, baseline, shape_type, trends_df):
+  df = summary_df.loc[(summary_df.device == device) &
+                      (summary_df.baseline == baseline) &
+                      (summary_df.shape_type == shape_type)]
+
+  if df.empty:
+    print(f"Could not calculate geomean for {device}, {baseline}, {shape_type}. Dataframe empty.")
+    return trends_df
+
+  geomean = scipy.stats.mstats.gmean(df.loc[:, _IREE_VS_BASELINE_RAW])
+  trends_df.loc[len(trends_df)] = [
+      device, shape_type, baseline, "geomean", "x faster", geomean, timestamp
+  ]
+  return trends_df
+
+
+def _calculate_static_vs_dynamic(timestamp, summary_df, device, trends_df):
+  dynamic_df = summary_df.loc[(summary_df.device == device) &
+                              (summary_df.baseline == "torch") &
+                              (summary_df.shape_type == "dynamic")]
+  static_df = summary_df.loc[(summary_df.device == device) &
+                             (summary_df.baseline == "torch") &
+                             (summary_df.shape_type == "static")]
+
+  # Only include models that exist in both static and dynamic modes.
+  dynamic_df = dynamic_df[dynamic_df[_MODEL].isin(static_df[_MODEL])]
+  static_df = static_df[static_df[_MODEL].isin(static_df[_MODEL])]
+
+  if dynamic_df.empty or static_df.empty:
+    print(f"Could not calculate mean for {device}. Dataframe empty.")
+    return trends_df
+
+  iree_dynamic_mean_latency = dynamic_df[_IREE_LATENCY].mean()
+  trends_df.loc[len(trends_df)] = [
+      device, "dynamic", "iree", "mean", "ms", iree_dynamic_mean_latency, timestamp
+  ]
+
+  torch_dynamic_mean_latency = dynamic_df[_BASELINE_LATENCY].mean()
+  trends_df.loc[len(trends_df)] = [
+      device, "dynamic", "torch", "mean", "ms", torch_dynamic_mean_latency, timestamp
+  ]
+
+  iree_static_mean_latency = static_df[_IREE_LATENCY].mean()
+  trends_df.loc[len(trends_df)] = [
+      device, "static", "iree", "mean", "ms", iree_static_mean_latency, timestamp
+  ]
+
+  torch_static_mean_latency = static_df[_BASELINE_LATENCY].mean()
+  trends_df.loc[len(trends_df)] = [
+      device, "static", "torch", "mean", "ms", torch_static_mean_latency, timestamp
+  ]
+
+  return trends_df
+
+
+def generate_trends(timestamp, summary_df):
+  trends_df = _create_trends_df()
+
+  # Static shapes.
+  # Calculate geomean of IREE vs PyTorch on CPU.
+  trends_df = _calculate_geomean(timestamp, summary_df, "cpu", "torch", "static",
+                                 trends_df)
+  # Calculate geomean of IREE vs PyTorch on Cuda.
+  trends_df = _calculate_geomean(timestamp, summary_df, "cuda", "torch", "static",
+                                 trends_df)
+  # Calculate geomean of IREE vs TF/XLA on CPU.
+  trends_df = _calculate_geomean(timestamp, summary_df, "cpu", "tf", "static", trends_df)
+  # Calculate geomean of IREE vs TF/XLA on Cuda.
+  trends_df = _calculate_geomean(timestamp, summary_df, "cuda", "tf", "static", trends_df)
+
+  # Dynamic shapes. Dynamic shapes only work on Torch models at the moment.
+  # Calculate geomean of IREE vs PyTorch on CPU.
+  trends_df = _calculate_geomean(timestamp, summary_df, "cpu", "torch", "dynamic",
+                                 trends_df)
+  # Calculate geomean of IREE vs PyTorch on Cuda.
+  trends_df = _calculate_geomean(timestamp, summary_df, "cuda", "torch", "dynamic",
+                                 trends_df)
+
+  # Dynamic vs static.
+  trends_df = _calculate_static_vs_dynamic(timestamp, summary_df, "cpu", trends_df)
+  trends_df = _calculate_static_vs_dynamic(timestamp, summary_df, "cuda", trends_df)
+
+  st = trends_df.style.set_table_styles(html_utils.get_table_css())
+  st = st.format(precision=1)
+  st = st.hide(axis="index")
+  st = st.hide_columns(subset=[_TIMESTAMP])
+  st = st.set_caption("Overall Metrics")
+  html = st.to_html() + "<br/>"
+
+  return trends_df, html
 
 
 def main(args):
@@ -216,50 +358,81 @@ def main(args):
                   f"<i>SHARK version: {args.shark_version}</i><br/>"
                   f"<i>last updated: {date.today().isoformat()}</i><br/><br/>")
 
-  html = html_utils.generate_header_and_legend(verison_html)
+  main_html = html_utils.generate_header_and_legend(verison_html)
+  summary_html = ""
+  df = _create_summary_df()
 
   # Generate Server CPU Static.
   if args.cpu_iree_csv is not None:
-    html += generate_table(args.cpu_iree_csv,
-                           args.cpu_baseline_csv,
-                           shark_csv=args.cpu_shark_csv,
-                           shape_type="static",
-                           device="cpu",
-                           title="Server Intel Ice Lake CPU (Static Shapes)")
+    summary_df, html = generate_table(
+        args.timestamp,
+        args.cpu_iree_csv,
+        args.cpu_baseline_csv,
+        shark_csv=args.cpu_shark_csv,
+        shape_type="static",
+        device="cpu",
+        title="Server Intel Ice Lake CPU (Static Shapes)")
+    df = df.append(summary_df, ignore_index=True)
+    summary_html += html
 
   # Generate Server GPU Static.
   if args.gpu_iree_csv is not None:
-    html += generate_table(args.gpu_iree_csv,
-                           args.gpu_baseline_csv,
-                           shark_csv=args.gpu_shark_csv,
-                           shape_type="static",
-                           device="cuda",
-                           title="Server NVIDIA Tesla A100 GPU (Static Shapes)")
+    summary_df, html = generate_table(
+        args.timestamp,
+        args.gpu_iree_csv,
+        args.gpu_baseline_csv,
+        shark_csv=args.gpu_shark_csv,
+        shape_type="static",
+        device="cuda",
+        title="Server NVIDIA Tesla A100 GPU (Static Shapes)")
+    df = df.append(summary_df, ignore_index=True)
+    summary_html += html
 
   # Generate Server CPU Dynamic.
   if args.cpu_iree_csv is not None:
-    html += generate_table(args.cpu_iree_csv,
-                           args.cpu_baseline_csv,
-                           shark_csv=args.cpu_shark_csv,
-                           shape_type="dynamic",
-                           device="cpu",
-                           title="Server Intel Ice Lake CPU (Dynamic Shapes)")
+    summary_df, html = generate_table(
+        args.timestamp,
+        args.cpu_iree_csv,
+        args.cpu_baseline_csv,
+        shark_csv=args.cpu_shark_csv,
+        shape_type="dynamic",
+        device="cpu",
+        title="Server Intel Ice Lake CPU (Dynamic Shapes)")
+    df = df.append(summary_df, ignore_index=True)
+    summary_html += html
 
   # Generate Server GPU Dynamic.
   if args.gpu_iree_csv is not None:
-    html += generate_table(
+    summary_df, html = generate_table(
+        args.timestamp,
         args.gpu_iree_csv,
         args.gpu_baseline_csv,
         shark_csv=args.gpu_shark_csv,
         shape_type="dynamic",
         device="cuda",
         title="Server NVIDIA Tesla A100 GPU (Dynamic Shapes)")
+    df = df.append(summary_df, ignore_index=True)
+    summary_html += html
 
-  args.output_path.write_text(html)
+  df.to_csv(os.path.join(args.output_dir, "summary.csv"), index=False)
+
+  trends_df, trends_html = generate_trends(args.timestamp, df)
+  trends_df.to_csv(os.path.join(args.output_dir, "trends.csv"), index=False)
+
+  main_html += trends_html
+  main_html += summary_html
+
+  html_path = pathlib.Path(os.path.join(args.output_dir, "summary.html"))
+  html_path.write_text(main_html)
 
 
 def parse_args():
   parser = argparse.ArgumentParser()
+  parser.add_argument(
+      "--timestamp",
+      type=str,
+      default=None,
+      help="Timestamp for when the results were captured.")
   parser.add_argument(
       "--cpu_shark_csv",
       type=str,
@@ -274,7 +447,7 @@ def parse_args():
   parser.add_argument(
       "--cpu_baseline_csv",
       type=str,
-      default="data/icelake_baseline_2022-09-19.csv",
+      default=None,
       help="The path to the csv file containing baseline CPU results.")
   parser.add_argument(
       "--gpu_shark_csv",
@@ -290,7 +463,7 @@ def parse_args():
   parser.add_argument(
       "--gpu_baseline_csv",
       type=str,
-      default="data/a100_baseline_2022-09-19.csv",
+      default=None,
       help="The path to the csv file containing baseline GPU results.")
   parser.add_argument("--iree_version",
                       type=str,
@@ -301,9 +474,9 @@ def parse_args():
                       default=None,
                       help="The SHARK version.")
   parser.add_argument(
-      "--output_path",
+      "--output_dir",
       type=pathlib.Path,
-      default="/tmp/summary.html",
+      default="/tmp/shark_summary",
       help="The path to the output html file that summarizes results.")
   return parser.parse_args()
 

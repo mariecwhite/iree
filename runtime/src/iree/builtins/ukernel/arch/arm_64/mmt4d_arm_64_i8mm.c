@@ -120,7 +120,6 @@ iree_uk_mmt4d_tile_s8s4s32_1x8x16_arm_64_i8mm(
     void* IREE_UK_RESTRICT out_tile, const void* IREE_UK_RESTRICT lhs_panel,
     const void* IREE_UK_RESTRICT rhs_panel,
     const iree_uk_mmt4d_params_t* params) {
-  IREE_UK_ASSERT(M0 == 1 && iree_uk_is_po2_u32(M0));
   IREE_UK_ASSERT(!(params->K0 % 16));
   const iree_uk_int8_t* IREE_UK_RESTRICT lhs_ptr = lhs_panel;
   const iree_uk_int8_t* IREE_UK_RESTRICT rhs_ptr = rhs_panel;

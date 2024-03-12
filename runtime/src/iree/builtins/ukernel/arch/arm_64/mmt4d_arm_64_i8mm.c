@@ -110,6 +110,135 @@ IREE_UK_MMT4D_TILE_FUNC_IMPL_FOR_M0(
 
 
 IREE_UK_ATTRIBUTE_ALWAYS_INLINE inline void
+iree_uk_mmt4d_tile_s8s4s32_1x16x16_arm_64_i8mm(
+    void* IREE_UK_RESTRICT out_tile, const void* IREE_UK_RESTRICT lhs_panel,
+    const void* IREE_UK_RESTRICT rhs_panel,
+    const iree_uk_mmt4d_params_t* params) {
+  IREE_UK_ASSERT(M0 == 1 && iree_uk_is_po2_u32(M0));
+  IREE_UK_ASSERT(!(params->K0 % 16));
+  const iree_uk_int8_t* IREE_UK_RESTRICT lhs_ptr = lhs_panel;
+  const iree_uk_int8_t* IREE_UK_RESTRICT rhs_ptr = rhs_panel;
+  iree_uk_int32_t* IREE_UK_RESTRICT out_ptr = out_tile;
+
+  const int8x16_t vmask = vmovq_n_s8(0xF0);
+  const int8x8_t vzero = vmov_n_s8(0);
+
+  int32x4_t acc[8];
+  IREE_UK_UNROLL for (int i = 0; i < 8; i++) {
+    // We start with zero accumulators and add the value of *out_ptr later.
+    // This is required for the int4 left shift described later.
+    acc[i] = vdupq_n_s32(0);
+  }
+
+  int8x16_t lhs[2];
+  for (int k = 0; k < params->K; ++k) {
+    int8x8x2_t lhs_uzp = vld2_s8(lhs_ptr);
+    lhs_ptr += 16;
+    lhs[0] = vcombine_s8(lhs_uzp.val[0], vzero);
+    lhs[1] = vcombine_s8(lhs_uzp.val[1], vzero);
+
+    int8x16_t rhs[4][4];
+    IREE_UK_UNROLL for (int i = 0; i < 2; i++) {
+      IREE_UK_UNROLL for (int j = 0; j < 4; j++) {
+        int8x16_t r = vld1q_s8(rhs_ptr + 16 * j);
+        // We unpack int4s into individual int8s. To preserve signedness,
+        // int4s are moved to the upper 4-bits of each byte. This has the effect
+        // of multiplying each int4 by 2^4 = 16. To compensate, we divide the
+        // accumulator values by 16 before storing to memory.
+        // This int4 conversion trick is borrowed from the `qd8-f32-qc4w-gemm*`
+        // kernels in https://github.com/google/XNNPACK.
+        rhs[2 * i + 0][j] = vshlq_n_s8(r, 4);
+        rhs[2 * i + 1][j] = vandq_s8(r, vmask);
+      }
+      rhs_ptr += 64;
+    }
+
+    IREE_UK_UNROLL for (int j = 0; j < 4; j++) {
+      acc[j] = vmmlaq_s32(acc[j], lhs[0], rhs[0][j]);
+      acc[j] = vmmlaq_s32(acc[j], lhs[1], rhs[1][j]);
+      acc[4 + j] = vmmlaq_s32(acc[4 + j], lhs[0], rhs[2][j]);
+      acc[4 + j] = vmmlaq_s32(acc[4 + j], lhs[1], rhs[3][j]);
+    }
+  }
+
+  IREE_UK_UNROLL for (int j = 0; j < 4; j++) {
+    acc[2 * j + 0] = vshrq_n_s32(acc[2 * j + 0], 4);
+    acc[2 * j + 1] = vshrq_n_s32(acc[2 * j + 1], 4);
+
+    int32x4_t acc_1x4_0 =
+        iree_uk_neon_uzp1_s32_as_s64(acc[2 * j + 0], acc[2 * j + 1]);
+    if (params->flags & IREE_UK_FLAG_MMT4D_ACCUMULATE) {
+      int32x4_t existing_acc = vld1q_s32(out_ptr + 4 * j);
+      acc_1x4_0 = vaddq_s32(acc_1x4_0, existing_acc);
+    }
+    vst1q_s32(out_ptr + 4 * j, acc_1x4_0);
+  }
+}
+
+
+//IREE_UK_ATTRIBUTE_ALWAYS_INLINE inline void
+//iree_uk_mmt4d_tile_s8s4s32_1x4x16_arm_64_i8mm(
+//    void* IREE_UK_RESTRICT out_tile, const void* IREE_UK_RESTRICT lhs_panel,
+//    const void* IREE_UK_RESTRICT rhs_panel,
+//    const iree_uk_mmt4d_params_t* params) {
+//  IREE_UK_ASSERT(M0 == 1 && iree_uk_is_po2_u32(M0));
+//  IREE_UK_ASSERT(!(params->K0 % 16));
+//  const iree_uk_int8_t* IREE_UK_RESTRICT lhs_ptr = lhs_panel;
+//  const iree_uk_int8_t* IREE_UK_RESTRICT rhs_ptr = rhs_panel;
+//  iree_uk_int32_t* IREE_UK_RESTRICT out_ptr = out_tile;
+//
+//  const int8x16_t vmask = vmovq_n_s8(0xF0);
+//  const int8x8_t vzero = vmov_n_s8(0);
+//
+//  int32x4_t acc[2];
+//  IREE_UK_UNROLL for (int i = 0; i < 2; i++) {
+//    // We start with zero accumulators and add the value of *out_ptr later.
+//    // This is required for the int4 left shift described later.
+//    acc[i] = vdupq_n_s32(0);
+//  }
+//
+//  int8x16_t lhs[2];
+//  for (int k = 0; k < params->K; ++k) {
+//    int8x8x2_t lhs_uzp = vld2_s8(lhs_ptr);
+//    lhs_ptr += 16;
+//    lhs[0] = vcombine_s8(lhs_uzp.val[0], vzero);
+//    lhs[1] = vcombine_s8(lhs_uzp.val[1], vzero);
+//
+//    int8x16_t rhs[2][2];
+//    IREE_UK_UNROLL for (int j = 0; j < 2; j++) {
+//      int8x16_t r = vld1q_s8(rhs_ptr + 16 * j);
+//      // We unpack int4s into individual int8s. To preserve signedness,
+//      // int4s are moved to the upper 4-bits of each byte. This has the effect
+//      // of multiplying each int4 by 2^4 = 16. To compensate, we divide the
+//      // accumulator values by 16 before storing to memory.
+//      // This int4 conversion trick is borrowed from the `qd8-f32-qc4w-gemm*`
+//      // kernels in https://github.com/google/XNNPACK.
+//      rhs[0][j] = vshlq_n_s8(r, 4);
+//      rhs[1][j] = vandq_s8(r, vmask);
+//    }
+//    rhs_ptr += 32;
+//
+//    IREE_UK_UNROLL for (int j = 0; j < 2; j++) {
+//      acc[j] = vmmlaq_s32(acc[j], lhs[0], rhs[0][j]);
+//      acc[j] = vmmlaq_s32(acc[j], lhs[1], rhs[1][j]);
+//    }
+//  }
+//
+//  IREE_UK_UNROLL for (int j = 0; j < 2; j++) {
+//    acc[j] = vshrq_n_s32(acc[j], 4);
+//  }
+//
+//  int32x4_t acc_1x4_0 =
+//      iree_uk_neon_uzp1_s32_as_s64(acc[0], acc[1]);
+//  if (params->flags & IREE_UK_FLAG_MMT4D_ACCUMULATE) {
+//    int32x4_t existing_acc = vld1q_s32(out_ptr);
+//    acc_1x4_0 = vaddq_s32(acc_1x4_0, existing_acc);
+//  }
+//  vst1q_s32(out_ptr, acc_1x4_0);
+//}
+
+
+IREE_UK_ATTRIBUTE_ALWAYS_INLINE inline void
 iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_2x8x16_arm_64_i8mm(
     void* IREE_UK_RESTRICT out_tile, const void* IREE_UK_RESTRICT lhs_panel,
     const void* IREE_UK_RESTRICT rhs_panel,

@@ -182,8 +182,10 @@ iree_uk_mmt4d_tile_s8s4s32_2x8x16_to_8x8x16_arm_64_i8mm(
   iree_uk_int32_t* IREE_UK_RESTRICT out_ptr = out_tile;
 
   const int8x16_t vmask = vmovq_n_s8(0xF0);
-  const int mtiles = M0 / 2;
+  const int miter = M0 == 2 ? 1 : M0 / 4;
+  const int aiter = M0 == 2 ? 1 : 2;
 
+  const int mtiles = M0 / 2;
   int32x4_t acc[4][4];
   for (int i = 0; i < mtiles; i++) {
     IREE_UK_UNROLL for (int j = 0; j < 4; j++) {
@@ -193,7 +195,7 @@ iree_uk_mmt4d_tile_s8s4s32_2x8x16_to_8x8x16_arm_64_i8mm(
     }
   }
 
-  for (int k = 0; k < params->K; ++k) {
+  for (int k = 0; k < params->K; k++) {
     int8x16_t rhs[2][4];
     IREE_UK_UNROLL for (int i = 0; i < 4; i++) {
       int8x16_t r = vld1q_s8(rhs_ptr + 16 * i);
@@ -202,28 +204,31 @@ iree_uk_mmt4d_tile_s8s4s32_2x8x16_to_8x8x16_arm_64_i8mm(
     }
     rhs_ptr += 64;
 
-    int8x16_t lhs[2][4];
-    if (M0 == 2) {
-      int8x8x2_t lhs_uzp[2];
-      IREE_UK_UNROLL for (int i = 0; i < 2; i++) {
-        lhs_uzp[i] = vld2_s8(lhs_ptr + 16 * i);
+#pragma clang loop unroll(disable)
+    for (int m = 0; m < miter; m++) {
+      int8x16_t lhs[2][2];
+      if (M0 > 2) {
+        IREE_UK_UNROLL for (int i = 0; i < 2; i++) {
+          int8x8x2_t lhs_0 = vld2_s8(lhs_ptr + 16 * 2 * i);
+          int8x8x2_t lhs_1 = vld2_s8(lhs_ptr + 16 * (2 * i + 1));
+          lhs[0][i] = vcombine_s8(lhs_0.val[0], lhs_1.val[0]);
+          lhs[1][i] = vcombine_s8(lhs_0.val[1], lhs_1.val[1]);
+        }
+        lhs_ptr += 64;
+      } else {
+        int8x8x2_t lhs_uzp[2];
+        IREE_UK_UNROLL for (int i = 0; i < 2; i++) {
+          lhs_uzp[i] = vld2_s8(lhs_ptr + 16 * i);
+        }
+        lhs[0][0] = vcombine_s8(lhs_uzp[0].val[0], lhs_uzp[1].val[0]);
+        lhs[1][0] = vcombine_s8(lhs_uzp[0].val[1], lhs_uzp[1].val[1]);
+        lhs_ptr += 32;
       }
-      lhs[0][0] = vcombine_s8(lhs_uzp[0].val[0], lhs_uzp[1].val[0]);
-      lhs[1][0] = vcombine_s8(lhs_uzp[0].val[1], lhs_uzp[1].val[1]);
-    } else {
-      for (int i = 0; i < mtiles; i++) {
-        int8x8x2_t lhs_0 = vld2_s8(lhs_ptr + 16 * 2 * i);
-        int8x8x2_t lhs_1 = vld2_s8(lhs_ptr + 16 * (2 * i + 1));
-        lhs[0][i] = vcombine_s8(lhs_0.val[0], lhs_1.val[0]);
-        lhs[1][i] = vcombine_s8(lhs_0.val[1], lhs_1.val[1]);
-      }
-    }
-    lhs_ptr += 32 * mtiles;
 
-    for (int i = 0; i < mtiles; i++) {
-      IREE_UK_UNROLL for (int j = 0; j < 4; j++) {
-        IREE_UK_UNROLL for (int m = 0; m < 2; m++) {
-          acc[i][j] = vmmlaq_s32(acc[i][j], lhs[m][i], rhs[m][j]);
+      IREE_UK_UNROLL for (int i = 0; i < aiter; i++) {
+        IREE_UK_UNROLL for (int j = 0; j < 4; j++) {
+          acc[2 * m + i][j] = vmmlaq_s32(acc[2 * m + i][j], lhs[0][i], rhs[0][j]);
+          acc[2 * m + i][j] = vmmlaq_s32(acc[2 * m + i][j], lhs[1][i], rhs[1][j]);
         }
       }
     }
